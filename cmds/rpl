@@ -1,0 +1,143 @@
+#!/usr/bin/tclsh
+
+#
+# rpl [-r] [file ...]
+#
+# -r Commit changes (replace) files in place
+# file - List of files to read, in grep -n format
+#
+# filename:nnnn:text
+#
+# text is replaced on line nnnn in filename for each line.
+# If "nnnn" is followed by a "d", then the line is deleted,
+#  for example;
+#
+#  filename:32d:text
+#   or
+#  filename:32d
+#
+# To change a pattern in a list of files:
+#
+# grep -n "oldtext" * | sed -e 's/oldtext/newtext/' | rpl -r
+#
+# Or, a more general, tree based incantation:
+#
+# find . -type f -print | xargs grep -n "oldtext" |\
+#	 sed -e 's/oldtext/newtext/'  | rpl -r
+
+
+proc replace {f} {
+    global Rflag
+    
+    set lno 1
+    set in [ open $f r ]
+    while {[gets $in line] >=0 } {
+    	set repfile($lno) $line
+    	incr lno 1
+    }
+    close $in
+
+    global $f
+
+# Replace lines in the replace buffer with those read from stdin or file args
+
+    set dlist {}
+    foreach n [ array names $f] {
+    	if {[string match "*d" $n]} {
+    		set dlist "$dlist [string trimright $n d]"
+    	} else {
+    	    set repfile($n) [ set ${f}($n)]
+    	}
+    }
+
+    if { $Rflag == "true" } {
+        set out [ open $f w ]
+    } else {
+    	set out stdout
+    }
+
+    for {set i 1} { $i<$lno } { incr i 1 } {
+
+# If this line is scheduled to be deleted then skip its output
+
+    	if { [lsearch -exact "$dlist" $i] != -1 } {
+    		continue
+    	}
+
+        puts $out [set repfile($i)]
+    }
+
+    if { $Rflag == "true" } {
+        close $out
+    }    	
+}
+
+#
+# Main
+#
+
+# Check for -r flag and remove from argv vector if found
+
+set Rflag [lsearch -exact $argv -r]
+if {$Rflag != -1} {
+	set argv [lreplace $argv $Rflag $Rflag]
+	set Rflag true
+	incr argc -1
+    } else {
+    set Rflag {}
+}
+
+# If we don't have any formal args, default to stdin
+
+if { $argc == 0 } {
+    set argv stdin
+    set argc 1
+}
+
+#
+# For each file or stdin, read in the change lines.  Each
+#  unique file name is used to create a dynamic array indexed
+#  by line number and the value is set to the change text
+
+for {set i 0 } {$i < $argc} {incr i 1} {
+
+    set a [lindex $argv $i]
+
+    if { $a != "stdin" } {
+        if [catch "open $a r" fid] {
+            puts stderr "Error opening $a"
+            exit 1
+            }
+        } else {
+        set fid stdin
+        }
+        
+    while { [gets $fid line] >=0 } {
+        set list [ split $line : ]
+        set file [ lindex $list 0 ]
+        set lno  [ lindex $list 1 ]
+
+# Create a dynamic array (${file}) and indexed by $lno and set
+#  the contents to the change text (3rd colon field till eol)
+
+        set ${file}($lno) [ join [lrange $list 2 end] : ]
+        set flist($file) 1
+    }    
+
+#
+# Sanity check to insure each of the files exist before we get committed
+#
+    foreach f [ array names flist ] {
+        if { ![file exists $f] } {
+        	puts "Error, can't find $f"
+        	exit 1
+            }
+        }
+#
+#  Replace each file
+#
+
+    foreach f [ array names flist ] {
+        replace $f
+        }
+}
